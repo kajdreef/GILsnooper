@@ -1,0 +1,69 @@
+/*******************************************************************************
+ * Initialize GILsnooper
+ ******************************************************************************/
+BEGIN {
+    @start_time_program = nsecs;
+}
+
+
+/*******************************************************************************
+ * Context switch
+ ******************************************************************************/
+uprobe:/usr/bin/python3:PyEval_SaveThread {
+    // printf("Enter:%d %d %s\n", pid, tid, usym(reg("ip")));
+    @start_switch = nsecs;
+}
+
+uprobe:/usr/bin/python3:PyEval_RestoreThread
+/ @start_switch != 0 /
+{
+    $context_switch_us = (nsecs - @start_switch) / 1000;
+
+    // Store relevant metrics
+    @context_switches = count();
+    @total_latency_us += $context_switch_us;
+    @gil_switch_hist = hist($context_switch_us);
+
+    delete(@start_switch);
+}
+
+
+/*******************************************************************************
+ * Context switch
+ ******************************************************************************/
+uprobe:/usr/bin/python3:PyEval_RestoreThread
+{
+    @start_tid[tid] = nsecs;
+}
+
+uprobe:/usr/bin/python3:PyEval_SaveThread 
+/ @start_tid[tid] != 0 /
+{
+    @tid_time[tid] += (nsecs - @start_tid[tid]);
+    delete(@start_tid[tid]);
+}
+
+
+/*******************************************************************************
+ * Print output
+ ******************************************************************************/
+END {
+    printf("\n");
+    printf("------------------------------------------------------------------------------------\n");
+    $total_execution_time_ms = (nsecs - @start_time_program) / 1_000_000;
+    printf("Total exeuction time: %ld ms\n", $total_execution_time_ms);
+    printf("GIL time: %ld ms\n", @total_latency_us / 1_000);
+    print(@tid_time, 0, 1_000_000);
+    printf("\n");
+    printf("GIL context switch histogram:\n");
+    print(@gil_switch_hist);
+
+    clear(@tid_time);
+    clear(@start_tid);
+    clear(@gil_switch_hist);
+
+    delete(@context_switches);
+    delete(@start_switch);
+    delete(@start_time_program);
+    delete(@total_latency_us);
+}
